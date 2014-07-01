@@ -4,6 +4,7 @@ require 'tempfile'
 require 'escape'
 require 'rbconfig'
 require 'calabash-android/java_keystore'
+require "YAML"
 
 def package_name(app)
   package_line = aapt_dump(app, "package").first
@@ -13,13 +14,37 @@ def package_name(app)
   m[1]
 end
 
+# def main_activity(app)
+#   launchable_activity_line = aapt_dump(app, "launchable-activity").first
+#   raise "'launchable-activity' not found in aapt output" unless launchable_activity_line
+#   m = launchable_activity_line.match(/name='([^']+)'/)
+#   raise "Unexpected output from aapt: #{launchable_activity_line}" unless m
+#   m[1]
+# end
+
 def main_activity(app)
-  launchable_activity_line = aapt_dump(app, "launchable-activity").first
-  raise "'launchable-activity' not found in aapt output" unless launchable_activity_line
-  m = launchable_activity_line.match(/name='([^']+)'/)
-  raise "Unexpected output from aapt: #{launchable_activity_line}" unless m
-  m[1]
+    begin
+        puts "my working dir is " + Dir.getwd
+        package_name = package_name(app)
+        puts "Lookin for #{package_name} in ~/.activities.yml ..."
+        cnf = YAML::load(File.open(File.expand_path(Dir.getwd + '/config/android_activities.yml')))
+        puts "Loaded YAML file from ~/.activities.yml ..."
+        main = cnf[package_name]
+        if main
+            log "Main activity for #{package_name}: #{main}"
+            return main
+        end
+        puts "Could not find entry for #{package_name} in ~/.activities.yml file..."
+    rescue
+        puts "Could not load file ~/.activities.yml"
+    end
+    launchable_activity_line = aapt_dump(app, "launchable-activity").first
+    raise "'launchable-activity' not found in aapt output" unless launchable_activity_line
+    m = launchable_activity_line.match(/name='([^']+)'/)
+    raise "Unexpected output from aapt: #{launchable_activity_line}" unless m
+    m[1]
 end
+
 
 def aapt_dump(app, key)
   lines = `"#{Env.tools_dir}/aapt" dump badging "#{app}"`.lines.collect(&:strip)
