@@ -7,19 +7,23 @@ require 'json'
 require 'socket'
 require 'timeout'
 require 'calabash-android/helpers'
-require 'calabash-android/wait_helpers'
+require 'calabash-android/text_helpers'
 require 'calabash-android/touch_helpers'
+require 'calabash-android/wait_helpers'
 require 'calabash-android/version'
 require 'calabash-android/env'
 require 'retriable'
 require 'cucumber'
+require 'date'
+require 'time'
 
 
 module Calabash module Android
 
 module Operations
-  include Calabash::Android::WaitHelpers
+  include Calabash::Android::TextHelpers
   include Calabash::Android::TouchHelpers
+  include Calabash::Android::WaitHelpers
 
   def current_activity
     `#{default_device.adb_command} shell dumpsys window windows`.each_line.grep(/mFocusedApp.+[\.\/]([^.\s\/\}]+)/){$1}.first
@@ -55,16 +59,26 @@ module Operations
   end
 
   def perform_action(action, *arguments)
-    @removed_actions = File.readlines(File.join(File.dirname(__FILE__), 'removed_actions.txt')) unless @removed_actions
-    @removed_actions.map! &:chomp
-
-    if @removed_actions.include?(action)
+    if removed_actions.include?(action)
       puts "\e[31mError: The action '#{action}' was removed in calabash-android 0.5\e[0m"
       puts 'Solutions that do not require the removed action can be found on:'
       puts "\e[36mhttps://github.com/calabash/calabash-android/blob/master/migrating_to_calabash_0.5.md\##{action}\e[0m"
+    elsif deprecated_actions.has_key?(action)
+      puts "\e[31mWarning: The action '#{action}' is deprecated\e[0m"
+      puts "\e[32mUse '#{deprecated_actions[action]}' instead\e[0m"
     end
     
     default_device.perform_action(action, *arguments)
+  end
+
+  def removed_actions
+    @removed_actions ||= File.readlines(File.join(File.dirname(__FILE__), 'removed_actions.txt')).map(&:chomp)
+  end
+
+  def deprecated_actions
+    @deprecated_actions ||= Hash[
+        *File.readlines(File.join(File.dirname(__FILE__), 'deprecated_actions.map')).map{|e| e.chomp.split(',')}.flatten
+    ]
   end
 
   def reinstall_apps
@@ -180,6 +194,31 @@ module Operations
       scroll_to_row(opts[:query], item)
       sleep(opts[:post_scroll]) if opts[:post_scroll] and opts[:post_scroll] > 0
       yield(item)
+    end
+  end
+
+  def set_date(query_string, year_or_datestring, month=nil, day=nil)
+    wait_for_element_exists(query_string)
+
+    if month.nil? && day.nil? && year_or_datestring.is_a?(String)
+      date = Date.parse(year_or_datestring)
+      set_date(query_string, date.year, date.month, date.day)
+    else
+      year = year_or_datestring
+      query(query_string, updateDate: [year, month-1, day])
+    end
+  end
+
+  def set_time(query_string, hour_or_timestring, minute=nil)
+    wait_for_element_exists(query_string)
+
+    if minute.nil? && hour_or_timestring.is_a?(String)
+      time = Time.parse(hour_or_timestring)
+      set_time(query_string, time.hour, time.min)
+    else
+      hour = hour_or_timestring
+      query(query_string, setCurrentHour: hour)
+      query(query_string, setCurrentMinute: minute)
     end
   end
 
@@ -506,7 +545,6 @@ module Operations
       env_options = {:target_package => package_name(@app_path),
                      :main_activity => main_activity(@app_path),
                      :test_server_port => @test_server_port,
-                     :debug => false,
                      :class => "sh.calaba.instrumentationbackend.InstrumentationBackend"}
 
       env_options = env_options.merge(options)
@@ -729,79 +767,8 @@ module Operations
     raise(msg)
   end
 
-  def has_text?(text)
-    !query("* {text CONTAINS[c] '#{text}'}").empty?
-  end
-
-  def assert_text(text, should_find = true)
-    raise "Text \"#{text}\" was #{should_find ? 'not ' : ''}found." if has_text?(text) ^ should_find
-
-    true
-  end
-
-  def double_tap(uiquery, options = {})
-    center_x, center_y = find_coordinate(uiquery)
-
-    perform_action("double_tap_coordinate", center_x, center_y)
-  end
-
-  # Performs a "long press" operation on a selected view
-  # Params:
-  # +uiquery+: a uiquery identifying one view
-  # +options[:length]+: the length of the long press in milliseconds (optional)
-  #
-  # Examples:
-  #   - long_press("* id:'my_id'")
-  #   - long_press("* id:'my_id'", {:length=>5000})
-  def long_press(uiquery, options = {})
-    center_x, center_y = find_coordinate(uiquery)
-    length = options[:length]
-    perform_action("long_press_coordinate", center_x, center_y, *(length unless length.nil?))
-  end
-
-  def touch(uiquery, options = {})
-    center_x, center_y = find_coordinate(uiquery)
-
-    perform_action("touch_coordinate", center_x, center_y)
-  end
-
-  def keyboard_enter_text(text, options = {})
-    perform_action('keyboard_enter_text', text)
-  end
-
-  def keyboard_enter_char(character, options = {})
-    keyboard_enter_text(character[0,1], options)
-  end
-
-  def enter_text(uiquery, text, options = {})
-    tap_when_element_exists(uiquery, options)
-    sleep 0.5
-    keyboard_enter_text(text, options)
-  end
-
-  def clear_text(query_string, options={})
-    result = query(query_string, setText: '')
-
-    raise "No elements found. Query: #{query_string}" if result.empty?
-
-    true
-  end
-
   def hide_soft_keyboard
     perform_action('hide_soft_keyboard')
-  end
-
-  def find_coordinate(uiquery)
-    raise "Cannot find nil" unless uiquery
-
-    element = execute_uiquery(uiquery)
-
-    raise "No elements found. Query: #{uiquery}" if element.nil?
-
-    center_x = element["rect"]["center_x"]
-    center_y = element["rect"]["center_y"]
-
-    [center_x, center_y]
   end
 
   def execute_uiquery(uiquery)
@@ -836,12 +803,44 @@ module Operations
     enter_text(uiquery, txt)
   end
 
+  def press_user_action_button(action_name=nil)
+    if action_name.nil?
+      perform_action("press_user_action_button")
+    else
+      perform_action("press_user_action_button", action_name)
+    end
+  end
+
+  def press_button(key)
+    perform_action('press_key', key)
+  end
+
   def press_back_button
-    perform_action('go_back')
+    press_button('KEYCODE_BACK')
   end
 
   def press_menu_button
-    perform_action('press_menu')
+    press_button('KEYCODE_MENU')
+  end
+
+  def press_down_button
+    press_button('KEYCODE_DPAD_DOWN')
+  end
+
+  def press_up_button
+    press_button('KEYCODE_DPAD_UP')
+  end
+
+  def press_left_button
+    press_button('KEYCODE_DPAD_LEFT')
+  end
+
+  def press_right_button
+    press_button('KEYCODE_DPAD_RIGHT')
+  end
+
+  def press_enter_button
+    press_button('KEYCODE_ENTER')
   end
 
   def select_options_menu_item(identifier, options={})
@@ -857,26 +856,6 @@ module Operations
 
     combined_query_string = "#{container_class} descendant #{menu_item_query_string}"
     touch(combined_query_string)
-  end
-
-  def tap_when_element_exists(query_string, options={})
-    options.merge!({action: lambda {|q| touch(q)}})
-
-    if options[:scroll] == true
-      scroll_to(query_string, options)
-    else
-      when_element_exists(query_string, options)
-    end
-  end
-
-  def long_press_when_element_exists(query_string, options={})
-    options.merge!({action: lambda {|q| long_press(q)}})
-
-    if options[:scroll] == true
-      scroll_to(query_string, options)
-    else
-      when_element_exists(query_string, options)
-    end
   end
 
   def swipe(dir,options={})
@@ -948,7 +927,12 @@ module Operations
     raise "No elements found. Query: #{all_query_string}" if element.nil?
     element_center_y = element['rect']['center_y']
 
-    scroll_view_query_string = "#{all_query_string} parent android.widget.ScrollView index:0"
+    if element.has_key?('html')
+      scroll_view_query_string = element['webView']
+    else
+      scroll_view_query_string = "#{all_query_string} parent android.widget.ScrollView index:0"
+    end
+
     scroll_element = query(scroll_view_query_string).first
 
     raise "Could not find parent scroll view. Query: #{scroll_view_query_string}" if element.nil?
@@ -1072,7 +1056,6 @@ module Operations
   def make_http_request(options)
     default_device.make_http_request(options)
   end
-
 end
 
 
